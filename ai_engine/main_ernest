@@ -1,3 +1,66 @@
+import cv2
+import requests
+import time
+import numpy as np
+from collections import deque
+from ultralytics import YOLO
+
+# --- CONFIGURATION ---
+MODEL_PATH = 'yolov8n-pose.pt' 
+BACKEND_URL = "http://localhost:8000/telemetry"
+VIDEO_SOURCE = 0  # 0 for webcam, or path to video file
+SEND_INTERVAL = 2 
+MAX_HISTORY = 30  # Number of frames to remember for each person
+
+# Dictionary to store keypoint history: { track_id: deque([frame1_kpts, frame2_kpts, ...]) }
+person_history = {}
+
+# --- MEMBER 1B LOGIC: BEHAVIORAL ANALYSIS ---
+def calculate_distress_score(keypoints_history):
+    """
+    Analyzes the last 30 frames of motion for a specific person.
+    """
+    if len(keypoints_history) < 15:
+        return 0
+
+    # Extract Wrist Y-coordinates and Nose Y-coordinates
+    # Joint 0=Nose, 9=L_Wrist, 10=R_Wrist
+    l_wrists_y = [f[9][1] for f in keypoints_history if f[9][1] > 0]
+    r_wrists_y = [f[10][1] for f in keypoints_history if f[10][1] > 0]
+    noses_y = [f[0][1] for f in keypoints_history if f[0][1] > 0]
+
+    if not l_wrists_y or not r_wrists_y or not noses_y:
+        return 0
+
+    # 1. Frequency check: How often are hands above the nose?
+    avg_nose = np.mean(noses_y)
+    hands_above_head = sum(1 for y in l_wrists_y if y < avg_nose) + \
+                       sum(1 for y in r_wrists_y if y < avg_nose)
+    
+    # 2. Agitation check: How much are the wrists moving vertically?
+    # High standard deviation = splashing/flailing
+    agitation = np.std(l_wrists_y) + np.std(r_wrists_y)
+
+    # 3. Final Heuristic (Weights: 40% hands, 60% agitation)
+    score = (hands_above_head * 0.5) + (agitation * 1.5)
+    
+    return min(int(score), 100)
+
+# --- MEMBER 1A INFRASTRUCTURE: THE MACHINE ---
+def send_alert(distress_score, person_id):
+    payload = {
+        "latitude": 1.348,
+        "longitude": 103.68, 
+        "distress_score": distress_score,
+        "status": "CRITICAL" if distress_score > 95 else "MONITORING",
+        "person_id": int(person_id)
+    }
+    try:
+        requests.post(BACKEND_URL, json=payload, timeout=0.1)
+        print(f"📡 Dispatching Drone to Person {person_id} | Score: {distress_score}")
+    except:
+        pass
+
 def calculate_distress_score(keypoints_history):
     # ... existing code ...
     
@@ -21,3 +84,64 @@ def calculate_distress_score(keypoints_history):
         score += 30 # Heavy weight on vertical body position in water
         
     return min(int(score), 100)
+
+def main():
+    model = YOLO(MODEL_PATH)
+    cap = cv2.VideoCapture(VIDEO_SOURCE)
+    last_send_time = 0
+    
+    print("🚀 Aero-ResQ AI Engine is Live. Analyzing Behaviors...")
+    while cap.isOpened():
+        success, frame = cap.read()
+        if not success: break
+        
+        start_time = time.time()
+
+        # Run Inference with Tracking enabled
+        results = model.track(frame, imgsz=320, persist=True, tracker="bytetrack.yaml", conf=0.4, verbose=False)
+
+        # Check if any people are detected AND have track IDs
+        if results[0].keypoints is not None and results[0].boxes.id is not None:
+            keypoints_data = results[0].keypoints.xy.cpu().numpy()
+            track_ids = results[0].boxes.id.int().cpu().tolist()
+            
+            for i, track_id in enumerate(track_ids):
+                # 1. Update History for this specific person
+                if track_id not in person_history:
+                    person_history[track_id] = deque(maxlen=MAX_HISTORY)
+                
+                person_history[track_id].append(keypoints_data[i])
+
+                # 2. Calculate behavioral score using Member 1B's function
+                distress_score = calculate_distress_score(list(person_history[track_id]))
+
+                # 3. Visuals
+                is_distress = distress_score > 95
+                color = (0, 0, 255) if is_distress else (0, 255, 0)
+                
+                # Draw the score above the person's head (using Nose coords)
+                nose_x, nose_y = keypoints_data[i][0]
+                if nose_x > 0:
+                    cv2.putText(frame, f"ID:{track_id} | RISK: {distress_score}%", 
+                                (int(nose_x) - 50, int(nose_y) - 20), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+                # 4. Telemetry
+                if is_distress and (time.time() - last_send_time > SEND_INTERVAL):
+                    send_alert(distress_score, track_id)
+                    last_send_time = time.time()
+
+        # UI & Performance
+        fps = 1 / (time.time() - start_time)
+        cv2.putText(frame, f"FPS: {int(fps)}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.imshow("Aero-ResQ: Behavioral Analysis Core", frame)
+        
+        if cv2.waitKey(1) & 0xFF == ord('q'): break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
+
+
