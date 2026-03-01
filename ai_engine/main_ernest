@@ -1,0 +1,23 @@
+def calculate_distress_score(keypoints_history):
+    # ... existing code ...
+    
+    # 1. ADD: Verticality Check (Nose vs Ankle)
+    # Joint 0=Nose, 15=L_Ankle, 16=R_Ankle
+    noses_y = [f[0][1] for f in keypoints_history if f[0][1] > 0]
+    ankles_y = [f[15][1] for f in keypoints_history if f[15][1] > 0]
+    
+    is_vertical = False
+    if noses_y and ankles_y:
+        # If the vertical distance between nose and ankle is large, they are 'climbing'
+        if np.mean(ankles_y) - np.mean(noses_y) > 100: # Threshold depends on altitude
+            is_vertical = True
+
+    # 2. ADD: Periodicity check (Drowning is erratic, ball throwing is a single burst)
+    # High variance in hand movement over a long time = drowning.
+    
+    # 3. Updated Heuristic
+    score = (hands_above_head * 0.3) + (agitation * 1.2)
+    if is_vertical:
+        score += 30 # Heavy weight on vertical body position in water
+        
+    return min(int(score), 100)
