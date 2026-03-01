@@ -1,0 +1,46 @@
+# --- Python / UV ---
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+# We keep uv.lock, but ignore the actual cached wheels
+.uv/
+
+# --- AI Models & Weights ---
+# Don't commit heavy model files. Let the script download them.
+*.pt
+*.pth
+*.onnx
+*.weights
+/ai_engine/models/
+
+# --- Data & Videos ---
+# We don't want to push 500MB of MP4s to GitHub
+/ai_engine/data/*
+!/ai_engine/data/.gitkeep
+
+# --- Node / Frontend ---
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+.next/
+
+# --- Environment & Secrets ---
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# --- OS Specific ---
+.DS_Store
+Thumbs.db
+*.swp
+
+# --- Logs ---
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
