@@ -8,303 +8,291 @@ from ultralytics import YOLO
 # --- CONFIGURATION ---
 MODEL_PATH = 'yolov8n-pose.pt' 
 BACKEND_URL = "http://localhost:8000/telemetry"
-VIDEO_SOURCE = 0  # 0 for webcam, or path to video file
+VIDEO_SOURCE = r"ai_engine\swimming_data\Active Drowning.mp4"  # Your aerial video
 SEND_INTERVAL = 2 
-MAX_HISTORY = 45  # Increased for better motion pattern analysis
-WATER_LINE_RATIO = 0.6  # Assume bottom 60% of frame is water (adjust based on camera angle)
+MAX_HISTORY = 45
 
-# Dictionary to store keypoint history: { track_id: deque([frame1_kpts, frame2_kpts, ...]) }
+# NEW: Detection parameters optimized for aerial views
+DETECTION_CONFIDENCE = 0.25  # Lower threshold to catch partial views
+AERIAL_MODE = True  # Enable aerial-specific optimizations
+
+# Dictionary to store keypoint history
 person_history = {}
 
-def is_in_water(keypoints, frame_height):
+def enhance_aerial_detection(results, frame):
     """
-    Determine if person is likely in water based on vertical position
+    Post-process detection results specifically for aerial views
+    where swimmers might appear as small objects
     """
-    if len(keypoints) == 0:
-        return False
+    if results[0].boxes is None:
+        return results
     
-    # Use hip/knee positions to determine if person is low in frame
-    # Joint indices: 11=left_hip, 12=right_hip, 13=left_knee, 14=right_knee
-    hip_knee_y = []
-    for idx in [11, 12, 13, 14]:
-        if idx < len(keypoints) and keypoints[idx][1] > 0:
-            hip_knee_y.append(keypoints[idx][1])
+    # Get current detections
+    boxes = results[0].boxes
+    keypoints = results[0].keypoints
     
-    if not hip_knee_y:
-        return False
+    # For aerial views, small clusters of pixels might be swimmers
+    # We'll use image pyramid and sliding window for small detections
+    # This is a simplified version - consider implementing multi-scale detection
     
-    avg_lower_body_y = np.mean(hip_knee_y)
-    water_threshold = frame_height * WATER_LINE_RATIO
-    
-    return avg_lower_body_y > water_threshold
+    return results
 
-def detect_swimming_pattern(keypoints_history):
+def detect_person_in_frame(keypoints, bbox, frame_height, frame_width):
     """
-    Detect rhythmic swimming patterns vs erratic drowning motions
+    Detect ANY person in the frame regardless of position
     """
-    if len(keypoints_history) < 20:
-        return False
+    if keypoints is None or len(keypoints) == 0:
+        return False, "NO_DETECTION"
     
-    # Extract wrist positions over time
-    l_wrists_y = [f[9][1] for f in keypoints_history if f[9][1] > 0]
-    r_wrists_y = [f[10][1] for f in keypoints_history if f[10][1] > 0]
+    # Check which keypoints are visible
+    visible_keypoints = []
+    for kp in keypoints:
+        if kp[0] > 0 and kp[1] > 0:  # x,y > 0 means detected
+            visible_keypoints.append(kp)
     
-    if len(l_wrists_y) < 15 or len(r_wrists_y) < 15:
-        return False
+    # For aerial views, different visibility patterns:
+    # - Full body visible (walking on deck)
+    # - Only head/shoulders visible (swimmers)
+    # - Small blobs (distant people)
     
-    # Check for rhythmic pattern (swimming)
-    # Swimming typically has alternating, smooth, periodic motion
-    l_wrist_diff = np.diff(l_wrists_y)
-    r_wrist_diff = np.diff(r_wrists_y)
-    
-    # Calculate rhythm score (lower = more rhythmic)
-    l_rhythm = np.std(l_wrist_diff) / (np.mean(np.abs(l_wrist_diff)) + 0.001)
-    r_rhythm = np.std(r_wrist_diff) / (np.mean(np.abs(r_wrist_diff)) + 0.001)
-    
-    # Check for alternation (swimmers alternate arms)
-    # Calculate correlation between left and right wrist movements
-    min_len = min(len(l_wrist_diff), len(r_wrist_diff))
-    if min_len > 5:
-        correlation = np.corrcoef(l_wrist_diff[:min_len], r_wrist_diff[:min_len])[0, 1]
-        # Negative correlation indicates alternating motion (swimming)
-        is_alternating = correlation < -0.3
-    else:
-        is_alternating = False
-    
-    # Rhythmic motion has low rhythm score (< 1.5 typically)
-    is_rhythmic = (l_rhythm < 1.5 and r_rhythm < 1.5)
-    
-    return is_rhythmic and is_alternating
-
-def detect_head_position_anomaly(keypoints_history):
-    """
-    Detect if head is abnormally low or bobbing (drowning sign)
-    """
-    if len(keypoints_history) < 15:
-        return 0
-    
-    noses_y = [f[0][1] for f in keypoints_history if f[0][1] > 0]
-    
-    if len(noses_y) < 10:
-        return 0
-    
-    # Calculate head bobbing (drowning victims often bob vertically)
-    head_movement = np.std(noses_y)
-    
-    # Check if head is consistently low (struggling to keep above water)
-    avg_head_height = np.mean(noses_y)
-    recent_head_height = np.mean(noses_y[-5:])
-    
-    # If head is getting lower over time (fatigue/trouble)
-    head_trend = recent_head_height - avg_head_height
-    
-    return {
-        'bobbing_intensity': min(head_movement * 2, 50),
-        'low_head_score': min(max(0, head_trend * 2), 50)
-    }
-
-def detect_arm_motion_anomaly(keypoints_history):
-    """
-    Detect frantic arm movements vs controlled swimming
-    """
-    if len(keypoints_history) < 15:
-        return 0
-    
-    # Extract wrist positions
-    l_wrists = [(f[9][0], f[9][1]) for f in keypoints_history if f[9][0] > 0 and f[9][1] > 0]
-    r_wrists = [(f[10][0], f[10][1]) for f in keypoints_history if f[10][0] > 0 and f[10][1] > 0]
-    
-    if len(l_wrists) < 10 or len(r_wrists) < 10:
-        return 0
-    
-    # Calculate speed of arm movements
-    l_speeds = []
-    r_speeds = []
-    
-    for i in range(1, len(l_wrists)):
-        dx = l_wrists[i][0] - l_wrists[i-1][0]
-        dy = l_wrists[i][1] - l_wrists[i-1][1]
-        l_speeds.append(np.sqrt(dx**2 + dy**2))
-    
-    for i in range(1, len(r_wrists)):
-        dx = r_wrists[i][0] - r_wrists[i-1][0]
-        dy = r_wrists[i][1] - r_wrists[i-1][1]
-        r_speeds.append(np.sqrt(dx**2 + dy**2))
-    
-    # Drowning involves frantic, fast movements
-    avg_speed = (np.mean(l_speeds) + np.mean(r_speeds)) / 2
-    
-    # Calculate motion irregularity (drowning is erratic)
-    l_motion_irregularity = np.std(l_speeds) / (np.mean(l_speeds) + 0.001)
-    r_motion_irregularity = np.std(r_speeds) / (np.mean(r_speeds) + 0.001)
-    
-    avg_irregularity = (l_motion_irregularity + r_motion_irregularity) / 2
-    
-    # High speed + high irregularity = drowning
-    speed_score = min(avg_speed * 2, 50)
-    irregularity_score = min(avg_irregularity * 30, 50)
-    
-    return speed_score + irregularity_score
-
-def calculate_distress_score(keypoints_history, frame_height):
-    """
-    Enhanced drowning detection for above-water view
-    """
-    if len(keypoints_history) < 15:
-        return 0
-    
-    # Get the most recent keypoints
-    current_kpts = keypoints_history[-1]
-    
-    # 1. First check: Is the person actually in the water?
-    if not is_in_water(current_kpts, frame_height):
-        return 0  # Not in water = not drowning
-    
-    # 2. Check if person is swimming rhythmically (false positive prevention)
-    if detect_swimming_pattern(keypoints_history):
-        return 20  # Low score for swimmers
-    
-    # 3. Analyze head position
-    head_anomaly = detect_head_position_anomaly(keypoints_history)
-    head_score = head_anomaly['bobbing_intensity'] + head_anomaly['low_head_score']
-    
-    # 4. Analyze arm motion
-    arm_score = detect_arm_motion_anomaly(keypoints_history)
-    
-    # 5. Check for vertical stability (drowning victims often can't stay vertical)
-    if len(keypoints_history) >= 10:
-        # Use shoulder positions to check body orientation
-        shoulders_y = []
-        for f in keypoints_history[-10:]:
-            if f[5][1] > 0 and f[6][1] > 0:  # Shoulders
-                shoulders_y.append((f[5][1] + f[6][1]) / 2)
+    if bbox is not None:
+        bbox_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+        frame_area = frame_height * frame_width
+        relative_size = bbox_area / frame_area
         
-        if shoulders_y:
-            shoulder_variance = np.var(shoulders_y)
-            vertical_instability = min(shoulder_variance * 2, 30)
-        else:
-            vertical_instability = 0
+        # Very small detections might be distant people
+        is_distant = relative_size < 0.03
     else:
-        vertical_instability = 0
+        is_distant = False
     
-    # Final weighted score
-    # Drowning: Head issues (40%) + Frantic arms (40%) + Instability (20%)
-    final_score = (head_score * 0.4) + (arm_score * 0.4) + (vertical_instability * 0.2)
+    # Determine what body parts are visible
+    head_visible = len([kp for kp in keypoints[:5] if kp[0] > 0]) > 0  # First 5 keypoints are head/face
+    upper_body_visible = len([kp for kp in keypoints[5:12] if kp[0] > 0]) > 0  # Shoulders, elbows
+    lower_body_visible = len([kp for kp in keypoints[12:] if kp[0] > 0]) > 0  # Hips, knees, ankles
     
-    return min(int(final_score), 100)
+    # Classify based on visible body parts
+    if head_visible and not upper_body_visible and not lower_body_visible:
+        status = "PERSON (HEAD ONLY)"
+    elif upper_body_visible and not lower_body_visible:
+        status = "PERSON (UPPER BODY)"
+    elif lower_body_visible:
+        status = "PERSON (FULL BODY)"
+    elif is_distant:
+        status = "PERSON (DISTANT)"
+    else:
+        status = "PERSON"
+    
+    return True, status
+
+def calculate_distress_score_aerial(keypoints_history, bbox_history, frame_height, frame_width):
+    """
+    Aerial-optimized distress detection focusing on movement patterns
+    """
+    if len(keypoints_history) < 10:
+        return 0
+    
+    # 1. Analyze movement patterns
+    if len(keypoints_history) >= 15 and bbox_history and len(bbox_history) >= 15:
+        # Track bbox centers over time for movement analysis
+        centers = []
+        for bbox in bbox_history[-15:]:
+            if bbox is not None:
+                center_x = (bbox[0] + bbox[2]) / 2
+                center_y = (bbox[1] + bbox[3]) / 2
+                centers.append([center_x, center_y])
+        
+        if len(centers) > 5:
+            centers = np.array(centers)
+            
+            # Calculate movement speed and direction changes
+            movements = np.diff(centers, axis=0)
+            speeds = np.linalg.norm(movements, axis=1)
+            
+            # Drowning: either very still (unconscious) or very erratic (panicking)
+            avg_speed = np.mean(speeds)
+            speed_variance = np.var(speeds)
+            
+            # Direction changes (more changes = more erratic)
+            if len(movements) > 1:
+                directions = np.arctan2(movements[:, 1], movements[:, 0])
+                direction_changes = np.abs(np.diff(directions))
+                direction_change_rate = np.mean(direction_changes) if len(direction_changes) > 0 else 0
+            else:
+                direction_change_rate = 0
+            
+            # Scoring logic - can be applied to anyone, not just swimmers
+            if avg_speed < 2:  # Very still - possible unconscious
+                distress_score = 80 + min(speed_variance * 10, 20)
+            elif avg_speed > 20 and direction_change_rate > 1.5:  # Erratic panicking
+                distress_score = 70 + min(direction_change_rate * 15, 30)
+            else:
+                distress_score = 20  # Normal movement
+        else:
+            distress_score = 10
+    else:
+        distress_score = 10
+    
+    return min(int(distress_score), 100)
 
 def send_alert(distress_score, person_id):
     payload = {
         "latitude": 1.348,
         "longitude": 103.68, 
         "distress_score": distress_score,
-        "status": "CRITICAL" if distress_score > 80 else "MONITORING" if distress_score > 40 else "NORMAL",
+        "status": "CRITICAL" if distress_score > 70 else "MONITORING" if distress_score > 30 else "NORMAL",
         "person_id": int(person_id)
     }
     try:
         requests.post(BACKEND_URL, json=payload, timeout=0.1)
-        if distress_score > 80:
-            print(f"🚨 DROWNING DETECTED! Person {person_id} | Score: {distress_score}")
-        elif distress_score > 40:
+        if distress_score > 70:
+            print(f"🚨 POTENTIAL DISTRESS! Person {person_id} | Score: {distress_score}")
+        elif distress_score > 30:
             print(f"⚠️ Monitoring Person {person_id} | Score: {distress_score}")
     except:
         pass
 
 def main():
+    # Load model
     model = YOLO(MODEL_PATH)
+    
+    # Open video
     cap = cv2.VideoCapture(VIDEO_SOURCE)
-    last_send_time = 0
     
-    # Get frame height for water line calculation
+    if not cap.isOpened():
+        print(f"❌ Could not open video: {VIDEO_SOURCE}")
+        return
+    
+    # Get video properties
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    if frame_height == 0:  # In case webcam hasn't started
-        frame_height = 480  # Default
     
-    print("🚀 Aero-ResQ AI Engine is Live. Analyzing Behaviors...")
-    print(f"📏 Frame height: {frame_height}, Water line at {int(frame_height * WATER_LINE_RATIO)}px")
+    print("🚀 Aero-ResQ Aerial Person Detection Active")
+    print(f"📹 Video: {VIDEO_SOURCE}")
+    print(f"📏 Resolution: {frame_width}x{frame_height}")
+    print(f"⚙️  Detection threshold: {DETECTION_CONFIDENCE}")
+    print("✅ Detecting ALL people in frame - NO water line restriction")
+    
+    last_send_time = 0
+    frame_count = 0
+    bbox_history = {}  # Store bbox history for each person
     
     while cap.isOpened():
         success, frame = cap.read()
-        if not success: break
+        if not success:
+            print("📹 End of video")
+            break
         
-        frame_height = frame.shape[0]  # Update frame height
         start_time = time.time()
-
-        # Run Inference with Tracking enabled
-        results = model.track(frame, imgsz=320, persist=True, tracker="bytetrack.yaml", conf=0.4, verbose=False)
-
-        # Draw water line for visualization
-        water_line_y = int(frame_height * WATER_LINE_RATIO)
-        cv2.line(frame, (0, water_line_y), (frame.shape[1], water_line_y), (255, 255, 0), 2)
-        cv2.putText(frame, "Water Line", (10, water_line_y - 10), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
-
-        # Check if any people are detected AND have track IDs
-        if results[0].keypoints is not None and results[0].boxes.id is not None:
+        frame_count += 1
+        
+        # Run inference with lower confidence threshold for aerial views
+        results = model.track(
+            frame, 
+            imgsz=640,  # Increased from 320 for better small object detection
+            persist=True, 
+            tracker="bytetrack.yaml", 
+            conf=DETECTION_CONFIDENCE,  # Lower threshold
+            verbose=False
+        )
+        
+        # Enhance detection for aerial views
+        results = enhance_aerial_detection(results, frame)
+        
+        # Process ALL detections (no water line restriction)
+        if (results[0].keypoints is not None and 
+            results[0].boxes is not None and 
+            results[0].boxes.id is not None):
+            
             keypoints_data = results[0].keypoints.xy.cpu().numpy()
+            boxes_data = results[0].boxes.xyxy.cpu().numpy()  # Get bounding boxes
             track_ids = results[0].boxes.id.int().cpu().tolist()
+            confidences = results[0].boxes.conf.cpu().numpy()
             
             for i, track_id in enumerate(track_ids):
-                # Update History for this specific person
+                # Update history
                 if track_id not in person_history:
                     person_history[track_id] = deque(maxlen=MAX_HISTORY)
+                    bbox_history[track_id] = deque(maxlen=MAX_HISTORY)
                 
                 person_history[track_id].append(keypoints_data[i])
-
-                # Calculate behavioral score with water context
-                distress_score = calculate_distress_score(
-                    list(person_history[track_id]), 
-                    frame_height
-                )
-
-                # Determine status and color
-                if distress_score > 80:
-                    status = "DROWNING"
-                    color = (0, 0, 255)  # Red
-                elif distress_score > 40:
-                    status = "MONITOR"
-                    color = (0, 165, 255)  # Orange
-                elif distress_score > 0:
-                    status = "SWIMMING" if is_in_water(keypoints_data[i], frame_height) else "WALKING"
-                    color = (0, 255, 0)  # Green
-                else:
-                    status = "SAFE"
-                    color = (255, 255, 255)  # White
+                bbox_history[track_id].append(boxes_data[i])
                 
-                # Draw the score and status above the person's head
-                nose_x, nose_y = keypoints_data[i][0]
-                if nose_x > 0:
-                    # Background for text
-                    cv2.rectangle(frame, 
-                                (int(nose_x) - 60, int(nose_y) - 45),
-                                (int(nose_x) + 150, int(nose_y) - 5),
-                                (0, 0, 0), -1)
+                # Detect ANY person in the frame
+                person_detected, person_status = detect_person_in_frame(
+                    keypoints_data[i], 
+                    boxes_data[i], 
+                    frame_height, 
+                    frame_width
+                )
+                
+                # Calculate distress score based on movement patterns
+                distress_score = calculate_distress_score_aerial(
+                    list(person_history[track_id]),
+                    list(bbox_history[track_id]),
+                    frame_height,
+                    frame_width
+                )
+                
+                if person_detected:
+                    # Color coding based on distress level
+                    if distress_score > 70:
+                        color = (0, 0, 255)  # Red for distress
+                    elif distress_score > 30:
+                        color = (0, 165, 255)  # Orange for monitoring
+                    else:
+                        color = (0, 255, 0)  # Green for normal
                     
-                    cv2.putText(frame, f"ID:{track_id} | {distress_score}%", 
-                                (int(nose_x) - 55, int(nose_y) - 25), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                    cv2.putText(frame, status, 
-                                (int(nose_x) - 55, int(nose_y) - 10), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-
-                # Telemetry for high distress
-                if distress_score > 80 and (time.time() - last_send_time > SEND_INTERVAL):
-                    send_alert(distress_score, track_id)
-                    last_send_time = time.time()
-
-        # UI & Performance
-        fps = 1 / (time.time() - start_time)
-        cv2.putText(frame, f"FPS: {int(fps)}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                    # Draw bounding box
+                    x1, y1, x2, y2 = boxes_data[i].astype(int)
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                    
+                    # Create label with all information
+                    confidence = confidences[i]
+                    label = f"ID:{track_id} | {person_status} | Distress:{distress_score}% | {confidence:.2f}"
+                    
+                    # Draw label background
+                    (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                    cv2.rectangle(frame, (x1, y1-20), (x1+label_w, y1), (0,0,0), -1)
+                    
+                    # Draw label text
+                    cv2.putText(frame, label, (x1, y1-5), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+                    
+                    # Draw keypoints if available (visualize body parts)
+                    if keypoints_data[i] is not None:
+                        for kp in keypoints_data[i]:
+                            if kp[0] > 0 and kp[1] > 0:
+                                cv2.circle(frame, (int(kp[0]), int(kp[1])), 3, (255,255,255), -1)
+                    
+                    # Alert for high distress
+                    if distress_score > 70 and (time.time() - last_send_time > SEND_INTERVAL):
+                        send_alert(distress_score, track_id)
+                        last_send_time = time.time()
+                        
+                        # Highlight with thicker red bounding box
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 4)
+        
+        # Display FPS
+        fps_display = int(1/(time.time()-start_time))
+        cv2.putText(frame, f"FPS: {fps_display}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
+        
+        # Show count of detected people
+        person_count = len(person_history) if person_history else 0
+        cv2.putText(frame, f"People detected: {person_count}", (20, 80), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
         
         # Add legend
-        cv2.putText(frame, "RED: Drowning | ORANGE: Monitor | GREEN: Swimming | WHITE: Safe", 
-                   (20, frame_height - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        legend_y = frame_height - 60
+        cv2.putText(frame, "RED: Distress (>70) | ORANGE: Monitor (30-70) | GREEN: Normal (<30)", 
+                   (20, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
         
-        cv2.imshow("Aero-ResQ: Enhanced Drowning Detection", frame)
+        # Display
+        cv2.imshow("Aero-ResQ: Aerial Person Detection (Full Frame)", frame)
         
-        if cv2.waitKey(1) & 0xFF == ord('q'): 
+        if cv2.waitKey(1) & 0xFF == ord('q'):
             break
-
+    
     cap.release()
     cv2.destroyAllWindows()
 
