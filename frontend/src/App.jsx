@@ -19,7 +19,7 @@ const App = () => {
   useEffect(() => {
     const fetchAlerts = async () => {
       try {
-        const res = await axios.get('http://localhost:8000/alerts');
+        const res = await axios.get('http://localhost:8000/alerts/latest');
         setAlerts(res.data);
       } catch (err) {
         console.error("Backend unreachable - is Member 2 server running?");
