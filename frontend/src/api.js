@@ -70,7 +70,15 @@ export const api = {
   /**
    * GET /analytics/bandwidth
    * Returns bandwidth savings statistics.
+   * Expected example: { savings_percent: "99.9%" } or { savings_percent: 99.9 }
    */
+  getBandwidthAnalytics: async () => {
+    const res = await fetch(`${BASE_URL}/analytics/bandwidth`);
+    if (!res.ok) throw new Error(`Failed to fetch bandwidth stats: ${res.status}`);
+    return res.json();
+  },
+
+  // Backwards-compatible alias (in case you already called api.getBandwidth() somewhere)
   getBandwidth: async () => {
     const res = await fetch(`${BASE_URL}/analytics/bandwidth`);
     if (!res.ok) throw new Error(`Failed to fetch bandwidth stats: ${res.status}`);

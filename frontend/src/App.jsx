@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { Header } from "./components/Header";
 import { AlertPanel } from "./components/AlertPanel";
 import MapArea from "./components/MapArea";
+import BandwidthBar from "./components/BandwidthBar"; // ✅ NEW
 import { api } from "./api";
 
 const SILOSO_BEACH = { lat: 1.2528, lng: 103.8096 };
@@ -12,7 +13,7 @@ export default function App() {
   const [alerts, setAlerts] = useState([]);
   const [alertStatus, setAlertStatus] = useState("idle"); // idle | detected | dispatched
 
-  // ✅ Incident log is BACK
+  // ✅ Incident log
   const [incidentLog, setIncidentLog] = useState([]);
 
   // Avoid duplicate DETECTED log lines for same alert
@@ -31,7 +32,7 @@ export default function App() {
         {
           id,
           ts: Date.now(),
-          ...entry, // { type, label, alert_id, coords, conf, drone_id, source }
+          ...entry,
         },
         ...prev,
       ].slice(0, 50)
@@ -55,7 +56,7 @@ export default function App() {
       const latestAlerts = Array.isArray(latestAlertsRaw) ? latestAlertsRaw : [];
       setAlerts(latestAlerts);
 
-      // ✅ Log NEW distresses (DETECTED) once
+      // Log NEW distresses once
       for (const a of latestAlerts) {
         if (!isDistress(a)) continue;
 
@@ -91,7 +92,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, [poll]);
 
-  // Normalize ONLY distresses for UI (current distresses list + map)
+  // Normalize ONLY distresses for UI
   const distresses = useMemo(() => {
     return (alerts || [])
       .filter(isDistress)
@@ -133,7 +134,6 @@ export default function App() {
         deployedForAlertRef.current.add(alertId);
         setAlertStatus("dispatched");
 
-        // ✅ Log DISPATCHED
         addLog({
           type: "DISPATCHED",
           label: "DRONE AUTO-DEPLOYED",
@@ -225,18 +225,22 @@ export default function App() {
   }));
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-slate-900 text-slate-100 font-sans overflow-hidden">
+    // ✅ Make root relative so BandwidthBar absolute positioning works
+    <div className="h-screen w-screen flex flex-col bg-slate-900 text-slate-100 font-sans overflow-hidden relative">
       <Header />
       <div className="flex-1 flex flex-row overflow-hidden">
         <AlertPanel
           alertStatus={alertStatus}
           triggerAIAlert={triggerAIAlert}
           distresses={distresses}
-          incidentLog={incidentLog}   // ✅ pass log back
+          incidentLog={incidentLog}
           beachCoords={SILOSO_BEACH}
         />
         <MapArea incidents={distressMarkers} />
       </div>
+
+      {/* ✅ NEW: bottom-left bandwidth savings bar */}
+      <BandwidthBar pollMs={5000} />
     </div>
   );
 }
