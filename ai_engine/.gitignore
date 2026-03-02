@@ -1,16 +1,5 @@
 # Ignore video files
 swimming_data/
-*.mp4
-*.mov
-*.avi
 
 # Ignore model weights
 *.pt
-*.onnx
-
-# Ignore temporary files
-*.tmp
-*.log
-__pycache__/
-*.pyc
-.DS_Store

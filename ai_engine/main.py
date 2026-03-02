@@ -15,7 +15,7 @@ import threading
 # ⚙️ CONFIGURATION - ADJUST THESE
 # ============================================================================
 
-VIDEO_SOURCE = "swimming_data/drowning.mp4"
+VIDEO_SOURCE = "../testbench/drowning.mp4"
 BACKEND_URL = "http://localhost:8000/telemetry"
 MODEL_PATH = 'yolov8n-pose.pt'
 

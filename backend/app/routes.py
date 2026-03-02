@@ -75,16 +75,32 @@ async def deploy_rescue(req: RescueRequest):
 @router.get("/analytics/bandwidth")
 async def get_bandwidth_metrics():
     pings = len(alert_history)
-    # Metadata (50 bytes) vs traditional CCTV stream (approx 2MB/sec)
-    metadata_kb = pings * 0.05 
-    traditional_mb = pings * 2.0 
     
-    savings = 100 - ((metadata_kb / (traditional_mb * 1024)) * 100)
+    # If no pings yet, return zeroed stats
+    if pings == 0:
+        return {
+            "total_pings_processed": 0,
+            "bandwidth_saved": "0.00%",
+            "aero_resq_usage": "0.00 KB",
+            "traditional_usage": "0.00 MB",
+            "privacy_compliance": "High (Skeletal Data Only)"
+        }
+
+    # REALISTIC CALCULATION:
+    # 1. Aero-ResQ: JSON + Headers + Auth overhead ≈ 1.25 KB per ping
+    # 2. Traditional: Compressed H.264 720p stream ≈ 62.5 KB per second (500kbps)
+    metadata_kb = pings * 1.25 
+    traditional_kb = pings * 62.5 
+    
+    # Calculate savings
+    # (1.25 / 62.5) = 0.02 (or 2%)
+    # 100% - 2% = 98%
+    savings = 100 - ((metadata_kb / traditional_kb) * 100)
     
     return {
         "total_pings_processed": pings,
         "bandwidth_saved": f"{savings:.2f}%",
         "aero_resq_usage": f"{metadata_kb:.2f} KB",
-        "traditional_usage": f"{traditional_mb:.2f} MB",
+        "traditional_usage": f"{(traditional_kb / 1024):.2f} MB",
         "privacy_compliance": "High (Skeletal Data Only)"
     }

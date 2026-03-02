@@ -16,9 +16,8 @@ __pycache__/
 /ai_engine/models/
 
 # --- Data & Videos ---
-# We don't want to push 500MB of MP4s to GitHub
-/ai_engine/data/*
-!/ai_engine/data/.gitkeep
+# Allow the test video to be uploaded
+!testbench/drowning.mp4
 
 # --- Node / Frontend ---
 frontend/node_modules/
