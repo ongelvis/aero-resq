@@ -23,7 +23,7 @@ import threading
 # ⚙️ CONFIGURATION - ADJUST THESE
 # ============================================================================
 
-VIDEO_SOURCE = 0
+VIDEO_SOURCE = "swimming_data/IMG_8047.MOV"
 BACKEND_URL = "http://localhost:8000/telemetry"
 MODEL_PATH = 'yolov8n-pose.pt'
 
@@ -584,10 +584,6 @@ def main():
         import traceback
         traceback.print_exc()
 
-if __name__ == "__main__":
-    main()
-    cap.release()
-    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
