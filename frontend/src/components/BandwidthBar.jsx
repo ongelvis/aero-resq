@@ -10,7 +10,11 @@ export default function BandwidthBar({ pollMs = 5000 }) {
 
     const fetchIt = async () => {
       try {
-        const res = await api.getBandwidthAnalytics();
+        // your api.js has getBandwidthAnalytics (or getBandwidth)
+        const res = api.getBandwidthAnalytics
+          ? await api.getBandwidthAnalytics()
+          : await api.getBandwidth();
+
         if (!alive) return;
         setData(res);
         setOk(true);
@@ -29,25 +33,31 @@ export default function BandwidthBar({ pollMs = 5000 }) {
   }, [pollMs]);
 
   const percent = useMemo(() => {
+    // ✅ YOUR BACKEND RETURNS: { bandwidth_saved: "100.00%" }
     const raw =
+      data?.bandwidth_saved ?? // <-- main one
+      data?.bandwidthSaved ??
       data?.savings_percent ??
       data?.savingsPercent ??
-      data?.savings ??
+      data?.saved_percent ??
       data?.percent ??
       null;
 
     if (raw == null) return null;
 
-    const n =
-      typeof raw === "number"
-        ? raw
-        : parseFloat(String(raw).replace("%", "").trim());
+    let n;
+    if (typeof raw === "number") n = raw;
+    else n = parseFloat(String(raw).replace("%", "").trim());
 
     if (!Number.isFinite(n)) return null;
+
+    // if backend returns 0.95 treat as 95%
+    if (n > 0 && n <= 1) n = n * 100;
+
     return Math.max(0, Math.min(100, n));
   }, [data]);
 
-  const label = percent == null ? "—" : `${percent.toFixed(1)}%`;
+  const label = percent == null ? "-" : `${percent.toFixed(0)}%`;
 
   return (
     <div className="pointer-events-none absolute left-4 bottom-4 z-30 w-[360px]">
