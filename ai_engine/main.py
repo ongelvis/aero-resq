@@ -1,29 +1,21 @@
 """
-AERO-RESQ Aerial Drowning Detector v3.0 (BULLETPROOF)
-====================================================
-
-All known issues fixed:
-✓ UnboundLocalError for person_tracking
-✓ TypeError for deque slicing
-✓ Better error handling throughout
-✓ Clean, readable code
-
-Just run: python aerial_detector_v3.py
+AERO-RESQ Aerial Drowning Detector
+==================================
 """
 
 import cv2
 import numpy as np
 import time
+import random
 from collections import deque
 from ultralytics import YOLO
 import requests
-import sys
 import threading
 # ============================================================================
 # ⚙️ CONFIGURATION - ADJUST THESE
 # ============================================================================
 
-VIDEO_SOURCE = "swimming_data/IMG_8047.MOV"
+VIDEO_SOURCE = "swimming_data/drowning.mp4"
 BACKEND_URL = "http://localhost:8000/telemetry"
 MODEL_PATH = 'yolov8n-pose.pt'
 
@@ -32,21 +24,11 @@ DETECTION_CONFIDENCE = 0.01
 MAX_HISTORY = 60
 
 # Drowning detection thresholds
-FRANTIC_MOTION_THRESHOLD = 8 #initial 8
+FRANTIC_MOTION_THRESHOLD = 2 #initial 8
 SMALL_MOVEMENT_RADIUS = 80 #initial 80
 LARGE_VELOCITY_CHANGE_THRESHOLD = 15.0 #initial 15
 MIN_HISTORY_FOR_DETECTION = 10 #initial 10
 
-# Water color (HSV)
-# Blue: (80, 0, 0) to (130, 255, 255)
-# Green: (40, 20, 20) to (100, 200, 200)
-# Brown: (0, 10, 20) to (180, 100, 150)
-WATER_COLOR_LOWER = np.array([80, 0, 0])
-WATER_COLOR_UPPER = np.array([130, 255, 255])
-
-# Contour size
-MIN_CONTOUR_AREA = 20
-MAX_CONTOUR_AREA = 5000
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -67,50 +49,33 @@ def clamp(value, min_val, max_val):
 # CORE DETECTION FUNCTIONS
 # ============================================================================
 
-def get_water_mask(frame):
-    """Detect water by color"""
+def detect_people_yolo(frame, model):
+    """Find people using Deep Learning instead of basic contours"""
     try:
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        water_mask = cv2.inRange(hsv, WATER_COLOR_LOWER, WATER_COLOR_UPPER)
-        
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        water_mask = cv2.morphologyEx(water_mask, cv2.MORPH_CLOSE, kernel)
-        water_mask = cv2.morphologyEx(water_mask, cv2.MORPH_OPEN, kernel)
-        
-        return water_mask
-    except Exception as e:
-        print(f"Error in water detection: {e}")
-        return np.zeros(frame.shape[:2], dtype=np.uint8)
-
-def detect_people_in_water(frame, water_mask):
-    """Find people (contours) in water"""
-    try:
-        inv_water_mask = cv2.bitwise_not(water_mask)
-        contours, _ = cv2.findContours(inv_water_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # classes=[0] forces YOLO to ONLY detect humans. It will ignore signs/objects.
+        # conf=0.3 means it must be 30% sure it's a human.
+        results = model(frame, classes=[0], conf=0.3, verbose=False)
         
         people = []
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            
-            if MIN_CONTOUR_AREA < area < MAX_CONTOUR_AREA:
-                x, y, w, h = cv2.boundingRect(contour)
+        for r in results:
+            for box in r.boxes:
+                # Get bounding box coordinates
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                w, h = x2 - x1, y2 - y1
                 
-                if h > 0:
-                    aspect_ratio = float(w) / h
-                    if 0.4 < aspect_ratio < 2.5:
-                        center_x = x + w // 2
-                        center_y = y + h // 2
-                        
-                        people.append({
-                            'bbox': (x, y, x + w, y + h),
-                            'center': (center_x, center_y),
-                            'area': area,
-                            'radius': max(w, h) // 2
-                        })
-        
+                # Calculate center
+                center_x = x1 + w // 2
+                center_y = y1 + h // 2
+                
+                people.append({
+                    'bbox': (x1, y1, x2, y2),
+                    'center': (center_x, center_y),
+                    'area': w * h,
+                    'radius': max(w, h) // 2
+                })
         return people
     except Exception as e:
-        print(f"Error in people detection: {e}")
+        print(f"Error in YOLO detection: {e}")
         return []
 
 def calculate_optical_flow(prev_frame, curr_frame):
@@ -372,14 +337,17 @@ def send_alert_to_backend(track_id, distress_score, distress_factors):
     if normalized_score > 0.7: status = "CRITICAL"
     elif normalized_score > 0.4: status = "WARNING"
 
+    lat_drift = random.uniform(-0.001, 0.001)
+    lng_drift = random.uniform(-0.001, 0.001)
+
     payload = {
         "device_id": f"AERO_UNIT_{track_id}",
-        "latitude": 1.3484,  # Simulated Sentosa Latitude
-        "longitude": 103.8141, # Simulated Sentosa Longitude
+        "latitude": 1.2494 + lat_drift,  # Using Sentosa coordinates
+        "longitude": 103.8150 + lng_drift,
         "distress_score": normalized_score,
         "status": status,
-        "privacy_mode": True, # High "Innovation" points for privacy
-        "joint_data": [float(track_id)] # We send the ID as a reference
+        "privacy_mode": True,
+        "joint_data": [float(track_id)]
     }
 
     def post_request():
@@ -460,8 +428,8 @@ def main():
             
             try:
                 # Detect water and people
-                water_mask = get_water_mask(frame)
-                people = detect_people_in_water(frame, water_mask)
+                water_mask = np.zeros(frame.shape[:2], dtype=np.uint8) # Dummy mask so drawing doesn't crash
+                people = detect_people_yolo(frame, model)
                 
                 # Calculate optical flow
                 if prev_frame is not None and len(people) > 0:
