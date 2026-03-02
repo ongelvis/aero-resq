@@ -1,24 +1,20 @@
 @import "tailwindcss";
 
-@theme {
-  --color-emergency: #ef4444; /* Red-500 */
-  --color-warning: #f59e0b;   /* Amber-500 */
-  --color-safe: #10b981;      /* Emerald-500 */
-}
-
 /* 1. RESET DEFAULT VITE BEHAVIOR */
-html, body, #root {
+html,
+body,
+#root {
   height: 100%;
   width: 100%;
   margin: 0;
   padding: 0;
-  overflow: hidden; /* Prevent unwanted scrollbars */
+  overflow: hidden;
   background-color: #1c1c1e;
   color: white;
 }
 
 body {
-  display: block; /* Remove 'place-items: center' which was breaking the layout */
+  display: block;
   font-family: system-ui, -apple-system, sans-serif;
 }
 
@@ -27,15 +23,14 @@ body {
   height: 100% !important;
   width: 100% !important;
   background-color: #242424 !important;
-  z-index: 0; /* Ensure map stays behind UI overlays */
+  z-index: 0;
 }
 
-/* Fix for Leaflet tiles appearing with white borders */
 .leaflet-tile-pane {
   background-color: #242424;
 }
 
-/* 3. SCROLLBAR STYLING (Optional, for the Sidebar) */
+/* 3. SCROLLBAR STYLING */
 ::-webkit-scrollbar {
   width: 6px;
 }
