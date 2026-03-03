@@ -34,9 +34,9 @@ npm run dev
 
 The dashboard is pre-configured to communicate with the Aero-ResQ Nerve Center (FastAPI) running on **port 8000**. 
 
-- **Data Synchronization:** The app uses a `useEffect` hook to fetch the latest telemetry every 3 seconds from `GET /api/v1/alerts/latest`.
+- **Data Synchronization:** The app uses a `useEffect` hook to fetch the latest telemetry every 3 seconds from `GET /alerts/latest`.
 - **Dynamic Markers:** Red "pulsing" markers are automatically injected and updated on the map based on the GPS coordinates provided in the AI metadata.
-- **Automated Dispatch:** The frontend supports the system's "Actionable Intervention" protocol. When an alert is detected, the dashboard triggers a `POST /api/v1/deploy-rescue` request to update the mission status in the incident log.
+- **Automated Dispatch:** The frontend supports the system's "Actionable Intervention" protocol. When an alert is detected, the dashboard triggers a `POST /deploy-rescue` request to update the mission status in the incident log.
 
 ---
 
